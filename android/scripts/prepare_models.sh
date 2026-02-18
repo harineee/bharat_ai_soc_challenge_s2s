@@ -14,7 +14,7 @@ echo "Target: $ASSETS"
 
 mkdir -p "$ASSETS/mt/onnx" "$ASSETS/tts"
 
-# ASR model (~75 MB)
+# ASR model 
 cp "$PROJECT_ROOT/models/asr/ggml-base.en.bin" "$ASSETS/" 2>/dev/null || echo "WARN: ASR model not found"
 
 # MT models (use INT8 if available, else FP32)
