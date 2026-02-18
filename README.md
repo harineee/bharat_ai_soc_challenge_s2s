@@ -1,4 +1,4 @@
-# Garud — Real-Time English → Hindi Speech-to-Speech Translation
+# Garud for Real-Time English → Hindi Speech-to-Speech Translation
 
 <p align="center">
   <img src="docs/icon_512.png" alt="Garud Logo" width="150" />
