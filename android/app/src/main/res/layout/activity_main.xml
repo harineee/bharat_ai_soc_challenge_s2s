@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#FAFAFA">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Garud"
+        android:textSize="26sp"
+        android:textStyle="bold"
+        android:textColor="#1565C0"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="2dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="English → Hindi Translation"
+        android:textSize="14sp"
+        android:textColor="#1565C0"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Real-time on-device speech translation"
+        android:textSize="12sp"
+        android:textColor="#666666"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Status bar with loading spinner -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:background="#E3F2FD"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="16dp">
+
+        <ProgressBar
+            android:id="@+id/loadingSpinner"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:layout_marginEnd="8dp"
+            android:visibility="visible"
+            android:indeterminateTint="#1565C0" />
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="#1565C0"
+            android:textSize="13sp"
+            android:text="Initializing..." />
+    </LinearLayout>
+
+    <!-- Translation mode selector -->
+    <RadioGroup
+        android:id="@+id/modeGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
+        <RadioButton
+            android:id="@+id/modeSpeed"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Speed"
+            android:textSize="12sp"
+            android:checked="true" />
+
+        <RadioButton
+            android:id="@+id/modeBalanced"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Balanced"
+            android:textSize="12sp" />
+    </RadioGroup>
+
+    <!-- Mode info -->
+    <TextView
+        android:id="@+id/modeInfo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Speed: NMT only (~49ms)"
+        android:textSize="11sp"
+        android:textColor="#888888"
+        android:layout_marginBottom="8dp" />
+
+    <!-- Control buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="16dp">
+
+        <Button
+            android:id="@+id/startButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Start"
+            android:backgroundTint="#4CAF50"
+            android:textColor="#FFFFFF"
+            android:layout_marginEnd="8dp" />
+
+        <Button
+            android:id="@+id/stopButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Stop"
+            android:backgroundTint="#F44336"
+            android:textColor="#FFFFFF"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+
+    <!-- English (ASR output) -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="English (ASR):"
+        android:textStyle="bold"
+        android:textSize="14sp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/englishText"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:minHeight="80dp"
+        android:padding="12dp"
+        android:background="#FFFFFF"
+        android:textSize="16sp"
+        android:text=""
+        android:gravity="top"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Hindi (Translation output) -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="हिन्दी (Translation):"
+        android:textStyle="bold"
+        android:textSize="14sp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/hindiText"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:minHeight="80dp"
+        android:padding="12dp"
+        android:background="#FFFFFF"
+        android:textSize="16sp"
+        android:text=""
+        android:gravity="top" />
+
+</LinearLayout>

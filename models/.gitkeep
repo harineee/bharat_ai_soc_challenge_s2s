@@ -1,0 +1,5 @@
+# Models directory
+# Place downloaded models here:
+# - asr/ggml-base.en.bin
+# - mt/opus-mt-en-hi.onnx (or .bin)
+# - tts/hindi-vits.onnx (or .bin)

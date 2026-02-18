@@ -1,0 +1,9 @@
+// Top-level build file
+// Repository configuration is in settings.gradle (dependencyResolutionManagement)
+plugins {
+    id 'com.android.application' version '8.1.0' apply false
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}

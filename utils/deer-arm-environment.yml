@@ -1,0 +1,23 @@
+name: deer-arm
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - cmake>=3.18
+  - ninja
+  - pkg-config
+  - make
+  - git
+  - wget
+  - pip
+  - pip:
+    - numpy
+    - onnx
+    - onnxruntime
+    - torch
+    - torchao
+    - transformers
+    - huggingface_hub
+    - executorch
+    - sentencepiece

@@ -1,0 +1,78 @@
+# Minimal CMakeLists for building SentencePiece static library from source.
+# Used when cross-compiling for Android (no prebuilt available).
+
+cmake_minimum_required(VERSION 3.18)
+
+# Use CMAKE_CURRENT_LIST_DIR (points to THIS file's directory)
+# NOT CMAKE_CURRENT_SOURCE_DIR (which points to the caller when using include())
+set(SP_SRC_DIR ${CMAKE_CURRENT_LIST_DIR}/src)
+set(SP_THIRD_PARTY ${CMAKE_CURRENT_LIST_DIR}/third_party)
+
+# ---------- Protobuf-lite (bundled) ----------
+set(PROTOBUF_LITE_DIR ${SP_THIRD_PARTY}/protobuf-lite)
+file(GLOB PROTOBUF_LITE_SRCS
+    "${PROTOBUF_LITE_DIR}/*.cc"
+)
+
+add_library(sentencepiece_proto STATIC ${PROTOBUF_LITE_SRCS})
+target_include_directories(sentencepiece_proto PUBLIC ${PROTOBUF_LITE_DIR})
+target_compile_definitions(sentencepiece_proto PRIVATE
+    HAVE_PTHREAD=1
+)
+set_target_properties(sentencepiece_proto PROPERTIES
+    CXX_STANDARD 17
+    POSITION_INDEPENDENT_CODE ON
+)
+
+# ---------- Absl stubs (bundled with SentencePiece) ----------
+set(ABSL_SRCS
+    ${CMAKE_CURRENT_LIST_DIR}/third_party/absl/log/log.cc
+    ${CMAKE_CURRENT_LIST_DIR}/third_party/absl/flags/flag.cc
+)
+
+# ---------- SentencePiece core (inference only, no trainers) ----------
+set(SP_CORE_SRCS
+    ${SP_SRC_DIR}/bpe_model.cc
+    ${SP_SRC_DIR}/char_model.cc
+    ${SP_SRC_DIR}/error.cc
+    ${SP_SRC_DIR}/filesystem.cc
+    ${SP_SRC_DIR}/model_factory.cc
+    ${SP_SRC_DIR}/model_interface.cc
+    ${SP_SRC_DIR}/normalizer.cc
+    ${SP_SRC_DIR}/sentencepiece_processor.cc
+    ${SP_SRC_DIR}/unigram_model.cc
+    ${SP_SRC_DIR}/util.cc
+    ${SP_SRC_DIR}/word_model.cc
+    ${SP_SRC_DIR}/builder.cc
+    ${SP_SRC_DIR}/unicode_script.cc
+    ${SP_SRC_DIR}/init.cc
+)
+
+# Generated protobuf source
+file(GLOB SP_PROTO_SRCS "${SP_SRC_DIR}/builtin_pb/*.cc")
+
+add_library(sentencepiece_source STATIC
+    ${SP_CORE_SRCS}
+    ${SP_PROTO_SRCS}
+    ${ABSL_SRCS}
+)
+
+target_include_directories(sentencepiece_source PUBLIC
+    ${SP_SRC_DIR}
+    ${SP_SRC_DIR}/builtin_pb
+    ${PROTOBUF_LITE_DIR}
+    ${SP_THIRD_PARTY}
+    ${CMAKE_CURRENT_LIST_DIR}   # Root for "third_party/absl/..." includes
+)
+
+target_link_libraries(sentencepiece_source sentencepiece_proto)
+
+target_compile_definitions(sentencepiece_source PRIVATE
+    HAVE_PTHREAD=1
+    _USE_INTERNAL_STRING_VIEW
+)
+
+set_target_properties(sentencepiece_source PROPERTIES
+    CXX_STANDARD 17
+    POSITION_INDEPENDENT_CODE ON
+)

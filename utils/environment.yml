@@ -1,0 +1,19 @@
+name: armhack
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - cmake>=3.18
+  - ninja
+  - pkg-config
+  - make
+  - git
+  - wget
+  - pip
+  - pip:
+    - numpy
+    - onnx
+    - onnxruntime  # For model inference/testing
+    - torch  # For model conversion if needed
+    - transformers  # For model downloading/conversion

@@ -1,0 +1,758 @@
+
+           Claude Code v2.1.42
+ ▐▛███▜▌   Opus 4.6 · Claude Max
+▝▜█████▛▘  ~/Desktop/Aaryan/deer/Hackathon/arm_s2s
+  ▘▘ ▝▝    Opus 4.6 is here · $50 free extra usage · Try fast mode or use i…
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Plan to implement                                                            │
+│                                                                              │
+│ ASR Speed Optimization Plan                                                  │
+│                                                                              │
+│ Context                                                                      │
+│                                                                              │
+│ Whisper-tiny.en on ARM64 (OnePlus CPH2767) takes ~4 seconds to process 2     │
+│ seconds of audio (0.5x real-time). The model is already INT8 quantized       │
+│ (75MB) and the build uses -O3, LTO, NEON SIMD. We need to squeeze more speed │
+│  from config/code changes without switching ASR engines.                     │
+│                                                                              │
+│ Key Findings                                                                 │
+│                                                                              │
+│ - Model ggml-tiny.en.bin is already INT8 quantized — no further model swap   │
+│ available for tiny                                                           │
+│ - speed_up param was removed from newer whisper.cpp — NOT available          │
+│ - audio_ctx param IS available — controls mel spectrogram context window     │
+│ (default ~1500 frames = 30 seconds). Reducing this is the biggest lever.     │
+│ - Built-in VAD is available (vad, vad_model_path, whisper_vad_params) but    │
+│ requires a separate model file                                               │
+│ - Build flags are already optimal (-O3, -flto, -funroll-loops, NEON SIMD)    │
+│                                                                              │
+│ Changes (all in asr/asr_wrapper.cpp)                                         │
+│                                                                              │
+│ 1. Reduce audio_ctx to 512                                                   │
+│                                                                              │
+│ The default 1500 processes a 30-second mel window even for 2-second chunks.  │
+│ Setting audio_ctx = 512 (~10 seconds) is more than enough for our 2-4 second │
+│  chunks and significantly reduces attention computation.                     │
+│ params.audio_ctx = 512;                                                      │
+│                                                                              │
+│ 2. Bump threads from 4 to 6                                                  │
+│                                                                              │
+│ OnePlus has 8 cores (4 big + 4 efficiency). Using 6 threads utilizes more    │
+│ big cores without saturating.                                                │
+│ params.n_threads = 6;                                                        │
+│                                                                              │
+│ 3. Simple amplitude-based VAD (pre-whisper)                                  │
+│                                                                              │
+│ Before calling whisper_full(), check if the audio chunk has speech. If peak  │
+│ amplitude is below a threshold (e.g., 0.01), skip whisper entirely. This     │
+│ avoids wasting 4 seconds on silence.                                         │
+│ // Before whisper_full():                                                    │
+│ float peak = 0;                                                              │
+│ for (size_t i = 0; i < audio_buffer_.size(); i++) {                          │
+│     float v = std::abs(audio_buffer_[i]);                                    │
+│     if (v > peak) peak = v;                                                  │
+│ }                                                                            │
+│ if (peak < 0.01f) {                                                          │
+│     audio_buffer_.clear();                                                   │
+│     return partial_text_;  // Skip — silence                                 │
+│ }                                                                            │
+│                                                                              │
+│ 4. Increase minimum chunk from 2s to 3s                                      │
+│                                                                              │
+│ Whisper has ~2 seconds of fixed overhead per run. Processing 3 seconds of    │
+│ audio means fewer runs and better throughput. The user experiences slightly  │
+│ more latency per sentence but overall fewer wasted whisper invocations.      │
+│ const size_t chunk_samples = SAMPLE_RATE * 3;  // 3 seconds                  │
+│                                                                              │
+│ 5. Set max_tokens to cap decoding                                            │
+│                                                                              │
+│ Prevent whisper from generating excessively long output on noisy input. Cap  │
+│ at 32 tokens per segment (plenty for 3-4 seconds of speech).                 │
+│ params.max_tokens = 32;                                                      │
+│                                                                              │
+│ 6. Filter hallucinations before sending to MT                                │
+│                                                                              │
+│ Whisper-tiny commonly hallucinates patterns like "[MUSIC PLAYING]",          │
+│ "(speaking in foreign language)", "you", "Thank you." on silence/noise.      │
+│ Filter these out in process_chunk() before appending to confirmed_text_.     │
+│                                                                              │
+│ Files to Modify                                                              │
+│                                                                              │
+│ - asr/asr_wrapper.cpp — All 6 changes above (VAD, audio_ctx, threads, chunk  │
+│ size, max_tokens, hallucination filter)                                      │
+│                                                                              │
+│ Expected Impact                                                              │
+│                                                                              │
+│ ┌────────────────────────┬─────────────────────────────────────┐             │
+│ │         Change         │          Estimated Speedup          │             │
+│ ├────────────────────────┼─────────────────────────────────────┤             │
+│ │ audio_ctx 1500→512     │ 1.5-2x (less attention computation) │             │
+│ ├────────────────────────┼─────────────────────────────────────┤             │
+│ │ 6 threads              │ 1.1-1.3x                            │             │
+│ ├────────────────────────┼─────────────────────────────────────┤             │
+│ │ VAD skip silence       │ Saves 100% on silent chunks         │             │
+│ ├────────────────────────┼─────────────────────────────────────┤             │
+│ │ 3s chunks (fewer runs) │ ~1.3x throughput                    │             │
+│ ├────────────────────────┼─────────────────────────────────────┤             │
+│ │ max_tokens=32          │ Prevents runaway decoding           │             │
+│ └────────────────────────┴─────────────────────────────────────┘             │
+│                                                                              │
+│ Combined: ~2-3x speedup, targeting ~1.5-2 seconds for 3 seconds of audio     │
+│ (~0.5-0.67x → ~1.5-2x real-time factor improvement).                         │
+│                                                                              │
+│ Verification                                                                 │
+│                                                                              │
+│ 1. Build APK: ./gradlew assembleDebug                                        │
+│ 2. Install on OnePlus                                                        │
+│ 3. Test with clear speech — verify ASR still produces accurate text          │
+│ 4. Check pipeline.log — compare timing (should see faster sentence           │
+│ detection)                                                                   │
+│ 5. Verify no regression in translation quality                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+⏺ I'll implement all 6 ASR speed optimizations in asr/asr_wrapper.cpp. Let me
+  start by reading the current file.
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Now let me check the header file to understand the class interface.
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Good, I have a clear picture. Now I'll implement all 6 optimizations. Let me
+  make the changes.
+
+⏺ First, add the <cmath> include for std::abs:
+
+⏺ Update(asr/asr_wrapper.cpp)
+  ⎿  Added 1 line
+      2  #include "whisper.h" // whisper.cpp header
+      3  
+      4  #include <cstring>
+      5 +#include <cmath>                                                
+      6  #include <algorithm>
+      7  #include <iostream>
+      8  
+
+⏺ Now apply change #4 (3s chunks) and #3 (VAD before whisper) in process_chunk:
+
+⏺ Update(asr/asr_wrapper.cpp)
+  ⎿  Added 16 lines, removed 4 lines
+      53                  num_samples * sizeof(float));
+      54      
+      55      // Process when we have enough samples for a chunk
+      56 -    // Use 2 seconds to give whisper better context (reduces pr
+         -ocessing time ratio)                                           
+      57 -    size_t min_samples = SAMPLE_RATE * 2; // 2 seconds — better
+         - accuracy per wall-clock second                                
+      56 +    // Use 3 seconds — fewer whisper invocations = better throu
+         +ghput (whisper has ~2s fixed overhead)                         
+      57 +    size_t min_samples = SAMPLE_RATE * 3; // 3 seconds         
+      58      size_t chunk_samples = std::max(static_cast<size_t>((chunk_
+          size_ms_ * SAMPLE_RATE) / 1000), min_samples);
+      59  
+      60      // Cap buffer to 10 seconds to keep processing time reasona
+          ble on mobile
+     ...
+      65      }
+      66  
+      67      if (audio_buffer_.size() >= chunk_samples) {
+      68 -        ASR_LOG("Running whisper: buffer=%zu samples (%.1fs)", 
+         -audio_buffer_.size(),                                          
+      69 -                (float)audio_buffer_.size() / SAMPLE_RATE);    
+      68 +        // Simple amplitude-based VAD: skip whisper entirely on
+         + silence                                                       
+      69 +        float peak = 0.0f;                                     
+      70 +        for (size_t i = 0; i < audio_buffer_.size(); i++) {    
+      71 +            float v = std::abs(audio_buffer_[i]);              
+      72 +            if (v > peak) peak = v;                            
+      73 +        }                                                      
+      74 +        if (peak < 0.01f) {                                    
+      75 +            ASR_LOG("VAD: silence detected (peak=%.4f), skippin
+         +g whisper", peak);                                             
+      76 +            audio_buffer_.clear();                             
+      77 +            return partial_text_;                              
+      78 +        }                                                      
+      79 +                                                               
+      80 +        ASR_LOG("Running whisper: buffer=%zu samples (%.1fs), p
+         +eak=%.3f",                                                     
+      81 +                audio_buffer_.size(), (float)audio_buffer_.size
+         +() / SAMPLE_RATE, peak);                                       
+      82          whisper_full_params params = whisper_full_default_param
+          s(WHISPER_SAMPLING_GREEDY);
+      83          params.print_progress = false;
+      84          params.print_special = false;
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Those diagnostics are just because whisper.h is in the submodule — not real
+  errors. Now apply changes #1 (audio_ctx=512), #2 (n_threads=6), and #5
+  (max_tokens=32) to the whisper params in process_chunk:
+
+⏺ Update(asr/asr_wrapper.cpp)
+  ⎿  Added 5 lines, removed 2 lines
+       85          params.print_realtime = false;
+       86          params.translate = false; // English ASR, not translat
+           ion
+       87          params.language = "en";
+       88 -        params.n_threads = 4; // Use more cores for faster pro
+          -cessing                                                       
+       88 +        params.n_threads = 6; // 6 threads for 8-core ARM (4 b
+          +ig + 4 efficiency)                                            
+       89          params.offset_ms = 0;
+       90          params.no_context = true;  // Don't use cross-chunk co
+           ntext (faster)
+       91          params.single_segment = true; // Single segment output
+            (faster)
+       92          params.suppress_blank = true;
+       93          params.temperature = 0.0f; // Deterministic
+       94 -                                                              
+       94 +        params.audio_ctx = 512;    // Reduce from 1500 (30s) —
+          + 512 (~10s) is enough for 3s chunks                           
+       95 +        params.n_max_text_ctx = 0; // No text context needed  
+       96 +        params.max_tokens = 32;    // Cap decoding length — pr
+          +events runaway on noisy input                                 
+       97 +                                                              
+       98          size_t n = audio_buffer_.size();
+       99          if (n == 0) return partial_text_;
+      100          // Run inference
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Now apply change #6 (hallucination filter). I'll add it after whisper returns
+  text, before appending to confirmed_text_:
+
+⏺ Update(asr/asr_wrapper.cpp)
+  ⎿  Added 29 lines
+      126              }
+      127              
+      128              ASR_LOG("whisper result: %d segments, text=\"%s\""
+           , n_segments, text.c_str());
+      129 +                                                              
+      130 +            // Filter common whisper-tiny hallucinations on no
+          +ise/silence                                                   
+      131              if (!text.empty()) {
+      132 +                bool is_hallucination = false;                
+      133 +                // Check for bracket/paren patterns like [MUSI
+          +C], (speaking in...)                                          
+      134 +                if (text.front() == '[' || text.front() == '('
+          +) {                                                           
+      135 +                    is_hallucination = true;                  
+      136 +                }                                             
+      137 +                // Common single-word hallucinations          
+      138 +                std::string lower_text = text;                
+      139 +                std::transform(lower_text.begin(), lower_text.
+          +end(), lower_text.begin(), ::tolower);                        
+      140 +                static const char* hallucinations[] = {       
+      141 +                    "you", "thank you", "thank you.", "thanks 
+          +for watching",                                                
+      142 +                    "thanks for watching.", "bye", "bye.", "go
+          +odbye",                                                       
+      143 +                    "the end", "the end.", "so", "okay",      
+      144 +                    nullptr                                   
+      145 +                };                                            
+      146 +                for (const char** h = hallucinations; *h; ++h)
+          + {                                                            
+      147 +                    if (lower_text == *h) {                   
+      148 +                        is_hallucination = true;              
+      149 +                        break;                                
+      150 +                    }                                         
+      151 +                }                                             
+      152 +                if (is_hallucination) {                       
+      153 +                    ASR_LOG("Filtered hallucination: \"%s\"", 
+          +text.c_str());                                                
+      154 +                    text.clear();                             
+      155 +                }                                             
+      156 +            }                                                 
+      157 +                                                              
+      158 +            if (!text.empty()) {                              
+      159                  // Accumulate text across whisper runs (keep f
+           ull context)
+      160                  if (confirmed_text_.empty()) {
+      161                      confirmed_text_ = text;
+  ⎿  Found 7 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Now apply the same param changes (#1, #2, #5) to the flush() method:
+
+⏺ Update(asr/asr_wrapper.cpp)
+  ⎿  Added 4 lines, removed 1 line
+      193      params.print_realtime = false;
+      194      params.translate = false;
+      195      params.language = "en";
+      196 -    params.n_threads = 4;                                     
+      196 +    params.n_threads = 6;                                     
+      197      params.offset_ms = 0;
+      198      params.no_context = true;
+      199      params.single_segment = true;
+      200      params.suppress_blank = true;
+      201      params.temperature = 0.0f;
+      202 +    params.audio_ctx = 512;                                   
+      203 +    params.n_max_text_ctx = 0;                                
+      204 +    params.max_tokens = 32;                                   
+      205      
+      206      int result = whisper_full(ctx_, params, 
+      207                               audio_buffer_.data(), 
+  ⎿  Found 5 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Now add hallucination filter to flush() as well, and also add VAD for flush:
+
+⏺ Update(asr/asr_wrapper.cpp)
+  ⎿  Added 26 lines
+      228              }
+      229          }
+      230          
+      231 +        // Filter hallucinations (same as process_chunk)      
+      232          if (!text.empty()) {
+      233 +            bool is_hallucination = false;                    
+      234 +            if (text.front() == '[' || text.front() == '(') { 
+      235 +                is_hallucination = true;                      
+      236 +            }                                                 
+      237 +            std::string lower_text = text;                    
+      238 +            std::transform(lower_text.begin(), lower_text.end(
+          +), lower_text.begin(), ::tolower);                            
+      239 +            static const char* hallucinations[] = {           
+      240 +                "you", "thank you", "thank you.", "thanks for 
+          +watching",                                                    
+      241 +                "thanks for watching.", "bye", "bye.", "goodby
+          +e",                                                           
+      242 +                "the end", "the end.", "so", "okay",          
+      243 +                nullptr                                       
+      244 +            };                                                
+      245 +            for (const char** h = hallucinations; *h; ++h) {  
+      246 +                if (lower_text == *h) {                       
+      247 +                    is_hallucination = true;                  
+      248 +                    break;                                    
+      249 +                }                                             
+      250 +            }                                                 
+      251 +            if (is_hallucination) {                           
+      252 +                ASR_LOG("Filtered hallucination in flush: \"%s
+          +\"", text.c_str());                                           
+      253 +                text.clear();                                 
+      254 +            }                                                 
+      255 +        }                                                     
+      256 +                                                              
+      257 +        if (!text.empty()) {                                  
+      258              if (confirmed_text_.empty()) {
+      259                  confirmed_text_ = text;
+      260              } else {
+  ⎿  Found 3 new diagnostic issues in 1 file (ctrl+o to expand)
+
+⏺ Let me verify the final file looks correct:
+
+⏺ Read 1 file (ctrl+o to expand)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+⏺ The file looks correct. Now let me verify it builds. Let me check the Android
+  build to make sure these whisper params exist in the whisper.cpp version being
+   used.
+
+⏺ Searched for 3 patterns (ctrl+o to expand)
+
+⏺ All three params (audio_ctx, max_tokens, n_max_text_ctx) exist in the
+  whisper.h header. Let me now try a host build to verify compilation:
+
+⏺ Bash(PATH="/Users/amk/miniconda3/envs/deer-arm/bin:$PATH"
+      ./scripts/build_host.sh 2>&1 | tail -30)
+  ⎿  ./scripts/build_host.sh: line 8: dirname: command not found
+     ./scripts/build_host.sh: line 9: dirname: command not found
+
+⏺ The build script needs dirname. Let me try building directly:
+
+⏺ Bash(mkdir -p build-host && cd build-host && cmake ../host
+      -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -20)
+  ⎿  (eval):1: command not found: cmake
+
+⏺ Bash(PATH="/Users/amk/miniconda3/envs/deer-arm/bin:/opt/homebrew/bin:/usr/loca
+      l/bin:$PATH" && mkdir -p
+      /Users/amk/Desktop/Aaryan/deer/Hackathon/arm_s2s/build-host &&…)
+  ⎿  Error: Exit code 127
+     (eval):1: command not found: mkdir
+
+⏺ Bash(export PATH="/Users/amk/miniconda3/envs/deer-arm/bin:/opt/homebrew/bin:/u
+      sr/local/bin:/usr/bin:/bin:$PATH" && cd
+      /Users/amk/Desktop/Aaryan/deer/Hackathon/arm_s2…)
+  ⎿    to work with policies introduced by <max> or earlier.
+     … +19 lines (ctrl+o to expand)
+
+⏺ Bash(export PATH="/Users/amk/miniconda3/envs/deer-arm/bin:/opt/homebrew/bin:/u
+      sr/local/bin:/usr/bin:/bin:$PATH" && make -j$(sysctl -n hw.ncpu) 2>&1 |
+      tail -30)
+  ⎿  [  3%] Building CXX object tts/CMakeFiles/tts_wrapper.dir/tts_wrapper.
+     cpp.o
+     [  3%] Building CXX object mt/CMakeFiles/mt_wrapper.dir/mt_wrapper.cpp
+     … +23 lines (ctrl+o to expand)
+  ⎿  (timeout 3m)
+
+⏺ The error is unrelated to my changes — it's the existing ExecuTorch header
+  issue (need -DUSE_EXECUTORCH=OFF). Let me rebuild without ExecuTorch:
+
+⏺ Bash(export PATH="/Users/amk/miniconda3/envs/deer-arm/bin:/opt/homebrew/bin:/u
+      sr/local/bin:/usr/bin:/bin:$PATH" && cmake ../host
+      -DCMAKE_BUILD_TYPE=Release -DUSE_EXE…)
+  ⎿  -- ggml commit:  764482c
+     -- TTS: ONNX Runtime found (prebuilt): /Users/amk/Desktop/Aaryan/deer/
+     Hackathon/arm_s2s/libs/onnxruntime-host/onnxruntime-osx-arm64-1.22.0
+     … +17 lines (ctrl+o to expand)
+  ⎿  (timeout 3m)
+
+⏺ Build succeeds with all changes. The asr_wrapper.cpp compiled without errors.
+  Let me also verify the Android build compiles:
+
+⏺ Bash(export PATH="/opt/homebrew/opt/openjdk@17/bin:/Users/amk/miniconda3/envs/
+      deer-arm/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH" &&
+      export JAVA_HOME=…)
+  ⎿  Running in the background (↓ to manage)
+
+⏺ While the Android build runs in the background, let me mark the task complete
+  and summarize the changes:
+
+⏺ All 6 ASR speed optimizations are implemented in asr/asr_wrapper.cpp:
+
+  ┌─────┬─────────────────┬────────────┬───────────────────────────────────────┐
+  │  #  │     Change      │   Lines    │                Detail                 │
+  ├─────┼─────────────────┼────────────┼───────────────────────────────────────┤
+  │     │                 │            │ Reduces mel spectrogram window from   │
+  │ 1   │ audio_ctx = 512 │ 94, 202    │ 1500 (30s) to 512 (~10s) — biggest    │
+  │     │                 │            │ speedup lever                         │
+  ├─────┼─────────────────┼────────────┼───────────────────────────────────────┤
+  │ 2   │ n_threads = 6   │ 88, 196    │ Uses 6 of 8 ARM cores (was 4)         │
+  ├─────┼─────────────────┼────────────┼───────────────────────────────────────┤
+  │ 3   │ Amplitude VAD   │ 68-78      │ Skips whisper entirely when peak <    │
+  │     │                 │            │ 0.01f (silence)                       │
+  ├─────┼─────────────────┼────────────┼───────────────────────────────────────┤
+  │ 4   │ 3s chunks       │ 57         │ Fewer whisper invocations — amortizes │
+  │     │                 │            │  fixed overhead (was 2s)              │
+  ├─────┼─────────────────┼────────────┼───────────────────────────────────────┤
+  │ 5   │ max_tokens = 32 │ 96, 204    │ Caps decoding to prevent runaway on   │
+  │     │                 │            │ noisy input                           │
+  ├─────┼─────────────────┼────────────┼───────────────────────────────────────┤
+  │ 6   │ Hallucination   │ 130-156,   │ Filters [MUSIC], (speaking in...),    │
+  │     │ filter          │ 231-255    │ "Thank you.", "you", etc.             │
+  └─────┴─────────────────┴────────────┴───────────────────────────────────────┘
+
+  Also added n_max_text_ctx = 0 (lines 95, 203) to skip text context prompt
+  entirely, and <cmath> include for std::abs.
+
+  Host build compiles and links successfully. Android build is running in the
+  background — let me check on it.
+
+⏺ Task Output b631440
+  ⎿  > Task :app:mergeExtDexDebug UP-TO-DATE
+     > Task :app:mergeLibDexDebug UP-TO-DATE
+     > Task :app:dexBuilderDebug UP-TO-DATE
+     … +17 lines (ctrl+o to expand)
+
+⏺ Android build also succeeds. Both host and Android (arm64-v8a + x86_64)
+  compile cleanly with all 6 optimizations.
+
+  Expected combined speedup: ~2-3x — from ~4s per 2s chunk (0.5x real-time) to
+  ~1.5-2s per 3s chunk (~1.5-2x real-time). The biggest wins come from
+  audio_ctx=512 (less attention computation) and VAD silence skipping (zero-cost
+   on silence).
+
+✻ Worked for 2m 36s
+
+⏺ Background command "Build Android APK to verify ASR changes compile for ARM"
+completed (exit code 0)
+
+⏺ The Android build already completed successfully — I checked the output above.
+   Both host and Android APK builds pass with all 6 ASR optimizations. The APK
+  is ready to install and test on the OnePlus device.
+
+❯ now install and test on the device 
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" && adb
+      devices 2>&1)
+  ⎿  List of devices attached
+     adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp      device
+
+⏺ Device is connected. Let me install the APK:
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" && adb -s
+      "adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" install -r
+      /Users/amk/Desktop/Aar…)
+  ⎿  Performing Streamed Install
+     Success
+  ⎿  (timeout 2m)
+
+⏺ Installed. Now let me clear any old log, launch the app, and then monitor the
+  pipeline log for ASR timing:
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" && ADB="adb
+      -s \"adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp\"" && eval
+      "$ADB shell rm -f…)
+  ⎿  Error: Exit code 1
+     Starting: Intent { cmp=com.example.arms2s/.MainActivity }
+     Error type 3
+     Error: Activity class {com.example.arms2s/com.example.arms2s.MainActivity} 
+     does not exist.
+
+⏺ Let me find the correct package name and activity:
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" && adb -s
+      "adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" shell pm list
+      packages 2>&1 | gre…)
+  ⎿  Error: Exit code 127
+     (eval):1: command not found: grep
+
+⏺ Searched for 2 patterns (ctrl+o to expand)
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" &&
+      SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb -s
+      "$SERIAL" shell rm -f /…)
+  ⎿  Error: Exit code 1
+     rm: /data/data/com.armm.translation/files/pipeline.log: Permission denied
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" &&
+      SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb -s
+      "$SERIAL" shell run-as…)
+  ⎿  Starting: Intent { cmp=com.armm.translation/.MainActivity }
+
+⏺ App launched. Let me give it a moment to initialize models, then check the
+  log:
+
+⏺ Bash(sleep 10 && export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+      && SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb
+      -s "$SERIAL" s…)
+  ⎿  Pipeline::init() started
+     Initializing ASR: /data/user/0/com.armm.translation/files/models/ggml-
+     tiny.en.bin
+     … +7 lines (ctrl+o to expand)
+  ⎿  (timeout 30s)
+
+⏺ App initialized in Speed mode. Now I need you to speak into the device to test
+   ASR. But first let me check if I can also see any ASR timing from logcat
+  (even on OnePlus):
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" &&
+      SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb -s
+      "$SERIAL" logcat -d -t…)
+  ⎿  (No output)
+
+⏺ OnePlus suppresses native logcat as expected. The pipeline.log is the way to
+  go. Let me check if ASR logging writes to the pipeline log file, or only to
+  logcat:
+
+⏺ Searched for 2 patterns (ctrl+o to expand)
+
+⏺ ASR_LOG goes to Android logcat (which OnePlus suppresses), while PIPE_LOG goes
+   to both logcat and the pipeline.log file. The ASR timing info from ASR_LOG
+  won't be visible. Let me check if the pipeline has any timing around ASR
+  calls:
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ There's PERF_START("asr_process") but I need to check if there's a
+  corresponding PERF_END that logs timing:
+
+⏺ Searched for 1 pattern (ctrl+o to expand)
+
+⏺ PERF_START uses a RAII timer — it logs when the scope ends. But the logging
+  goes to the performance tracker, not to pipeline.log. Let me add explicit ASR
+  timing to the pipeline log so we can see the speedup on-device. I'll add
+  timing around the process_chunk call:
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Good, <chrono> is already included. Let me add timing around the process_chunk
+   call:
+
+⏺ Update(pipeline/pipeline.cpp)
+  ⎿  Added 7 lines
+      274              chunk_count++;
+      275  
+      276              // Process audio with ASR (returns accumulated tra
+           nscript)
+      277 +            auto asr_t0 = std::chrono::steady_clock::now();   
+      278              std::string full_text = asr_->process_chunk(
+      279                  audio_chunk.data(),
+      280                  audio_chunk.size());
+      281 +            auto asr_t1 = std::chrono::steady_clock::now();   
+      282 +            auto asr_ms = std::chrono::duration_cast<std::chro
+          +no::milliseconds>(asr_t1 - asr_t0).count();                   
+      283 +            float audio_sec = (float)audio_chunk.size() / 1600
+          +0.0f;                                                         
+      284 +            PIPE_LOG("ASR chunk: %zu samples (%.1fs audio) → %
+          +ldms (%.2fx RT)",                                             
+      285 +                     audio_chunk.size(), audio_sec, asr_ms,   
+      286 +                     asr_ms > 0 ? (audio_sec * 1000.0f / asr_m
+          +s) : 0.0f);                                                   
+      287  
+      288              if (!full_text.empty() && full_text != "[BLANK_AUD
+           IO]") {
+      289                  {
+
+⏺ Now rebuild and reinstall:
+
+⏺ Bash(export PATH="/opt/homebrew/opt/openjdk@17/bin:/Users/amk/miniconda3/envs/
+      deer-arm/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH" &&
+      export JAVA_HOME=…)
+  ⎿  > Task :app:writeDebugAppMetadata UP-TO-DATE
+     > Task :app:writeDebugSigningConfigVersions UP-TO-DATE
+     > Task :app:mergeDebugNativeLibs
+     … +7 lines (ctrl+o to expand)
+  ⎿  (timeout 5m)
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" &&
+      SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb -s
+      "$SERIAL" shell am forc…)
+  ⎿  Performing Streamed Install
+     Success
+  ⎿  (timeout 2m)
+
+⏺ Bash(export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH" &&
+      SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb -s
+      "$SERIAL" shell run-as…)
+  ⎿  Starting: Intent { cmp=com.armm.translation/.MainActivity }
+
+⏺ App launched. Let me wait for init and check the log:
+
+⏺ Bash(sleep 8 && export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+      && SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb
+      -s "$SERIAL" sh…)
+  ⎿  Error: Exit code 1
+     cat: files/pipeline.log: No such file or directory
+
+⏺ Bash(sleep 5 && export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+      && SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb
+      -s "$SERIAL" sh…)
+  ⎿  models
+     profileInstalled
+  ⎿  (timeout 15s)
+
+⏺ The log file hasn't been created yet — the app may not have been started (user
+   needs to tap Start in the UI). Let me check if the pipeline log path is
+  initialized on app start or on pipeline start:
+
+⏺ Searched for 1 pattern (ctrl+o to expand)
+
+⏺ The log file is created when Pipeline::init() is called — which happens when
+  the user taps "Start" in the UI.
+
+  Please tap "Start" in the app on your OnePlus device, then speak a clear 
+  English sentence (e.g., "Hello, how are you today.") into it. I'll monitor the
+   log for ASR timing results.
+
+  Once you've spoken, let me know and I'll pull the log. Or I can start polling
+  now:
+
+⏺ Bash(sleep 30 && export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+      && SERIAL="adb-3C15CH000Q900000-60hBLj (2)._adb-tls-connect._tcp" && adb
+      -s "$SERIAL" s…)
+  ⎿  Error: Exit code 1
+     cat: files/pipeline.log: No such file or directory
+
+⏺ The pipeline hasn't been started yet. Please tap the "Start" button in the 
+  ARMM app on your device and speak a few sentences. Let me know when you've
+  done so and I'll pull the log to check ASR timing.
+
+✻ Churned for 4m 3s
+
+❯ ok i have already tested this and it works great, so the next task is the 
+   qwen thing right?                                                        
+
+⏺ Let me check the TODO to see what the Qwen plan is.
+
+⏺ Searched for 1 pattern (ctrl+o to expand)
+
+⏺ Bash(export PATH="/usr/bin:/bin:$PATH" && cd
+      /Users/amk/Desktop/Aaryan/deer/Hackathon/arm_s2s && git log --oneline -5
+      2>&1 && echo "---" && git show --stat HEAD 2>&1)
+  ⎿  8935bc4 Add TODO with Qwen LLM plan, chat context export
+     61e6b23 Add sentence-wise translation, echo suppression, and TTS pad f
+     ix
+     … +17 lines (ctrl+o to expand)
+
+⏺ Read 1 file (ctrl+o to expand)
+
+⏺ Yes — Priority 2: Qwen LLM Integration is next. The main tasks are:
+
+  1. Push .pte model to device and wire it into nativeInit
+  2. Add mode toggle UI (Speed/Balanced/Quality selector)
+  3. Verify ExecuTorch builds on Android (AAR linking)
+  4. Test Balanced mode on device
+
+  Also note that some Priority 1 items (VAD, threads, chunk size, hallucination
+  filter) are now done from what we just implemented.
+
+  Want me to plan the Qwen LLM integration? The key decision is whether to focus
+   on just getting the toggle + model loading working (demo-ready), or also
+  tackle the KV-cache optimization stretch goal.
+
+❯ so my idea for this Qwen correction was we have the NMT translaton that   
+  is already working great, so we can enhance this and check if its         
+  contextually correct if we pass the NMT translated hindi text as well as  
+  the english text right? please discuss on this thansk                     
+
+⏺ Great idea — let me think through this with you.
+
+  What you're proposing
+
+  Use Qwen not as a translator, but as a post-editor/verifier:
+  - NMT gives you fast, reliable Hindi (~20-49ms)
+  - Pass Qwen both the English source + NMT Hindi
+  - Qwen checks contextual correctness and makes minimal corrections
+
+  How this differs from what's already there
+
+  The current speculative decoding (build_refinement_prompt()) is similar but
+  subtly different — it asks Qwen to regenerate the full Hindi translation using
+   NMT as a "draft". That's why it's slow (6.5s full-prefill) and often produces
+   worse output than NMT, because Qwen3-0.6B isn't good enough at Hindi
+  generation.
+
+  Your idea is lighter: don't ask Qwen to translate, ask it to judge/fix.
+
+  Three possible approaches
+
+  A) Confidence scoring (no generation, fastest)
+  - Tokenize the NMT Hindi output
+  - Run ONE forward pass through Qwen with "English: {src}\nHindi: {nmt_hindi}"
+  - Look at the logits/perplexity for each Hindi token
+  - If confidence is high → accept NMT as-is (zero generation cost)
+  - If confidence is low on specific tokens → flag them
+  - This is essentially "how surprised is Qwen by this translation?"
+  - Cost: one forward pass, no autoregressive loop
+
+  B) Minimal correction prompt (light generation)
+  - Prompt: "English: {src}\nHindi translation: {nmt_hindi}\nIf correct, reply 
+  CORRECT. Otherwise reply with only the corrected Hindi:"
+  - Most of the time Qwen says "CORRECT" (1 token) → fast
+  - Occasionally it outputs a corrected version
+  - Risk: Qwen3-0.6B may "correct" things that were already right
+
+  C) Token-level verification (hybrid — what speculative decoding already does)
+  - This is the existing 65% acceptance approach but reframed
+  - Already implemented, just needs device enablement
+
+  My recommendation
+
+  Approach A (confidence scoring) is the strongest for your situation because:
+  1. No generation — just one forward pass, same cost regardless of output
+  length
+  2. Qwen is better at judging than generating — small models can assess
+  plausibility even when they can't produce good text
+  3. NMT is already correct most of the time — you just need a safety net for
+  edge cases
+  4. Graceful fallback — if Qwen is uncertain, you still have the NMT output
+  (which is good)
+
+  The flow would be:
+  English → NMT (49ms) → Hindi draft
+                       → Qwen scores draft (one forward pass)
+                       → confidence high? ship NMT as-is
+                       → confidence low? flag it (or fall back to NMT anyway,
+  since Qwen can't do better)
+
+  The practical question is: given that Qwen3-0.6B can't generate good Hindi 
+  anyway, what do you actually do when confidence is low? If the answer is
+  "still use NMT", then the scoring becomes more of a quality metric/logging
+  tool than a correction mechanism.
+
+  Approach B is more actionable if you want actual corrections, but the 6.5s
+  latency + Qwen's limited Hindi ability makes it risky.
+
+  What's your thinking — do you want Qwen to actually correct the output, or
+  more to score/validate it? And how important is keeping latency low (shipping
+  NMT immediately vs. waiting for Qwen)?
+
+✻ Churned for 42s

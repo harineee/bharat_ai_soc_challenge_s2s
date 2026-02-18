@@ -1,0 +1,60 @@
+# Build artifacts
+build/
+build-*/
+build-host/
+*.o
+*.a
+*.so
+*.dylib
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.claude/
+
+# Models (large, download separately)
+models/asr/*.bin
+models/mt/onnx/*.onnx
+models/mt/*.pt
+models/mt/*.gguf
+models/tts/*.onnx
+models/llm/*.pte
+models/llm/*.bin
+models/llm/Qwen3-0.6B/
+!models/**/*.json
+!models/**/*.spm
+
+# Output artifacts
+outputs/
+
+# Release APKs (too large for GitHub, use GitHub Releases)
+releases/*.apk
+
+# Android build
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/app/src/main/assets/models/
+
+# Test artifacts
+*.wav
+*.log
+*.pyc
+__pycache__/
+data/
+
+# OS
+.DS_Store
+Thumbs.db
+*.Zone.Identifier
+
+# Conda
+.conda/
+
+# Prebuilt Android deps (run scripts/setup_android_deps.sh)
+libs/
+.tmp_android_deps/
