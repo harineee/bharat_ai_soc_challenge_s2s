@@ -59,7 +59,7 @@ Built for the **Bharat AI-SoC Student Challenge 2026**.
 │                         ▼                   ▼                    │
 │                    ┌────────┐          ┌─────────┐               │
 │                    │ SPEED  │          │BALANCED │               │
-│                    │  NMT   │          │NMT+LLM │                │
+│                    │  NMT   │          │NMT+LLM  │               │
 │                    │ ~49ms  │          │~300-    │               │
 │                    │        │          │ 600ms   │               │
 │                    └────────┘          └─────────┘               │
