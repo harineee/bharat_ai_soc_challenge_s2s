@@ -8,6 +8,8 @@
 
 Built for the **Bharat AI-SoC Student Challenge 2026**.
 
+You can download the APK from the Releases section and try the app yourself.
+
 ---
 
 ## Features
